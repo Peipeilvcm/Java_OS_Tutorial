@@ -1,0 +1,56 @@
+鼠标移动时，内核会将所有窗口重新绘制,浪费很大
+
+// 采用局部刷新
+void sheet_refreshsub(struct SHTCTL *ctl, int vx0, int vy0, int vx1, int vy1) {
+    int h, bx, by, vx, vy;
+    unsigned char *buf, c, *vram = ctl->vram;
+    struct SHEET *sht;
+    for (h = 0; h <= ctl->top; h++) {
+        sht = ctl->sheets[h];
+        buf = sht->buf;
+        for (by = 0; by < sht->bysize; by++) {
+            vy = sht->vy0 + by;
+            for (bx = 0; bx < sht->bxsize; bx++) {
+                vx = sht->vx0 + bx;
+                if (vx0 <= vx && vx < vx1 && vy0 <= vy && vy < vy1) {
+                    c = buf[by * sht->bxsize + bx];
+                    if (c != sht->col_inv) {
+                        vram[vy * ctl->xsize + vx] = c;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 窗口移动时，也是两个区域刷新
+void sheet_slide(struct SHTCTL *ctl, struct SHEET *sht, int vx0, int vy0) {
+    int old_vx0 = sht->vx0, old_vy0 = sht->vy0;
+    sht->vx0 = vx0;
+    sht->vy0 = vy0;
+    if (sht->height >= 0) {
+         sheet_refreshsub(ctl, old_vx0, old_vy0, old_vx0 + sht->bxsize, old_vy0 + sht->bysize);
+         sheet_refreshsub(ctl, vx0, vy0, vx0+sht->bxsize, vy0+sht->bysize);
+    }
+}
+
+// 重写刷新函数
+int sheet_refresh(struct SHTCTL *ctl, struct SHEET *sht, int bx0, int by0, int bx1, int by1) {
+    if (sht->height >= 0) {
+        sheet_refreshsub(ctl, sht->vx0 + bx0, sht->vy0 + by0, sht->vx0 + bx1,
+        sht->vy0 + by1);
+    }
+    return 0;
+}
+
+// 文字刷新, 只对文字所在区域刷新，并绘制到指定图层不限制于桌面
+// sht对应绘制字符串的窗口图层，sheet_refresh仅更新文字所占据的区域
+void showString(struct SHTCTL *shtctl ,struct SHEET *sht, int x, int y, char color, unsigned char *s ) {
+    int begin = x;
+    for (; *s != 0x00; s++) {
+       showFont8(sht->buf, sht->bxsize, x, y,color, systemFont+ *s * 16);
+       x += 8;
+    }
+
+    sheet_refresh(shtctl, sht, begin, y, x , y + 16); 
+}！

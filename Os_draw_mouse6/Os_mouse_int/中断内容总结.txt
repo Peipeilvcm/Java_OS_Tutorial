@@ -1,0 +1,147 @@
+中断两个问题：硬件如何发送信号给CPU,CPU接受信号后如何处理去执行内核代码
+
+//github keji300 C-with-C-PLUS-PLUS
+
+8259可编程控制器,一般两个级联,分主从片，每个8259有8个IRQ中断信号线,可接15个外设硬件
+硬件初始化，往端口发送ICW
+依次给主(20h,21h)、从(A0h,A1h)分别发送ICW1、ICW2、ICW3、ICW4 命令控制字
+再向主、从分别发送OCW,对应哪些中断信号线被屏蔽
+eg:
+mov al, 11111101b 
+out 21h, al
+表示CPU只接收主8259A, IRQ1管线发送的信号
+mov al, 11111111b 
+out 0A1h, al
+表示CPU忽略所有来自从8259A芯片的信号
+
+鼠标通过从8259A的IRQ4向CPU发送信号，有如下初始化代码
+init8259A:
+	init8259A: ;向8259A发送ICW1初始化
+		mov al,011h ;00010001,ICW1[0]=1表示需要发送ICW4，ICW1[1]=0表示有级联8259A
+		out 020h,al ;向端口发送数据（向寄存器地址写入数据）
+		call io_delay
+		
+		out 0A0h,al ;向从片的端口（地址）发送数据
+		call io_delay
+		
+		mov al,020h 
+		out 021h,al ;向8259A主片发送ICW2 当主8259A对应的IRQ0管线向CPU发送信号时，CPU根据0x20这个值去查找要执行的代码，IRQ1管线向CPU发送信号时，CPU根据0x21这个值去查找要执行的代码，依次类推。
+		call io_delay
+		
+		mov al,028h ;从片irq0接收到电信号后，cpu从0x28地址查找执行的代码
+		out 0A1h,al ;向从片发送ICW2
+		call io_delay
+		
+		mov al,004h ;发送ICW3给主片 ICW[2]=1表示从8259A从IRQ2连接到主片
+		out 0A1h,al
+		call io_delay
+		
+	    mov  al, 002h;发送ICW3给从片 告诉从片是编号为2的管线连接到主片
+     	out  0A1h, al
+     	call io_delay
+		
+		;003h 对应的ICW4为，ICW4[0]=1表示当前CPU架构师80X86，ICW4[1]=1表示自动EOI, 如果这位设置成0的话，那么中断响应后，代码要想继续处理中断，就得主动给CPU发送一个信号，如果设置成1，那么代码不用主动给CPU发送信号就可以再次处理中断。
+	    mov  al, 003h
+        out  021h, al
+        call io_delay
+		
+		out  0A1h, al ;给从片发送ICW4
+        call io_delay
+        
+        ;当上面的配置完成后，我们还需要再向两个芯片分别发送一个字节，叫  OCW(operation control word), 一个OCW是一字节数据，也就是8bit,每一bit设置作用是，当OCW[i] = 1 时,屏蔽对应的IRQ(i)管线的信号，例如OCW[0]=1, 那么IRQ0管线的信号将不会被CPU接收，以此类推。
+        mov al,11111101b;只接收IRQ1来的电信号（主片IRQ1接键盘）键盘中断
+        out 021h,al
+        call io_delay
+
+        mov  al, 11111111b  ; 屏蔽从片
+        out  0A1h, al
+        call io_delay
+        
+        ret
+        
+        io_delay:
+        	nop
+        	nop
+        	nop
+        	nop
+        	ret
+
+解决了发送信号问题，再处理如何执行内核代码
+需要知道代码内存位置,中断描述符实现，专门描述可执行代码所在内存
+struct GATE_DESCRIPTOR {
+short offset_low; // 和high组成中断函数代码在代码执行段中的偏移
+short selector;    //指向全局描述符中的某个描述符，中断函数代码就在该描述符指向的段中
+char dw_count;  //0
+char attribute; //08Eh
+short offset_high;
+};
+
+// 内核中加载中断描述符表
+;Gate selecotor, offset, DCount, Attr
+%macro Gate 4
+  dw  (%2 & 0FFFFh)
+  dw  %1
+  dw  (%3 & 1Fh) | ((%4 << 8) & 0FF00h)
+  dw  ((%2>>16) & 0FFFFh)
+%endmacro
+
+// 内核代码中，全局描述符表加载到CPU后,就加载中断描述符表
+//初始化一个中断描述符，%rep 255表明重复初始化255个中断描述符,支持255个中断
+// 两个8259的15个中断就包含在255个中
+LABEL_IDT:
+%rep  255
+    Gate  SelectorCode32, SpuriousHandler,0, DA_386IGate
+%endrep
+
+IdtLen  equ $ - LABEL_IDT
+IdtPtr  dw  IdtLen - 1
+        dd  0
+
+// SpuriousHandler是中断代码的入口,255个中断的处理代码都设置成SpuriousHandler
+// 无论哪个中断发生，都调用这个函数来处理
+    xor   eax, eax
+    mov   ax,  ds
+    shl   eax, 4
+    add   eax, LABEL_IDT
+    mov   dword [IdtPtr + 2], eax
+    lidt  [IdtPtr]
+
+//由于加载全局描述符时我们使用指令cli关闭了中断功能，因此我们需要回复中断功能，CPU才能相应来自8259A芯片的信号
+// 通过sti指令恢复中断功能
+[SECTION .s32]
+    [BITS  32]
+    LABEL_SEG_CODE32:
+    ;initialize stack for c code
+    mov  ax, SelectorStack
+    mov  ss, ax
+    mov  esp, TopOfStack
+
+    mov  ax, SelectorVram
+    mov  ds,  ax
+
+    mov  ax, SelectorVideo
+    mov  gs, ax
+
+    sti
+    %include "write_vga_desktop.asm"
+
+    jmp  $
+
+// SpuriousHandler的实现：
+_SpuriousHandler:
+SpuriousHandler  equ _SpuriousHandler - $$
+call intHandlerFromC
+iretd
+
+// 当点击键盘，引发中断时，_SpuriousHandler的代码被调用，它又调用了C模块实现的函数
+// intHandlerFromC 的实现
+void intHandlerFromC(char* esp) {
+    char*vram = bootInfo.vgaRam;
+    int xsize = bootInfo.screenX, ysize = bootInfo.screenY;
+    boxfill8(vram, xsize, COL8_000000, 0,0,32*8 -1, 15);
+    showString(vram, xsize, 0, 0, COL8_FFFFFF, "PS/2 keyboard"); 
+    for (;;) {
+        io_hlt();
+    }
+    show_char();
+}

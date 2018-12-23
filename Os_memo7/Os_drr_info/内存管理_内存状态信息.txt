@@ -1,0 +1,84 @@
+# 解析内存范围描述符
+把BIOS填充好的数据缓冲过去导出给C语言模块
+get_adr_buffer:
+    mov  eax, MemChkBuf
+    ret
+
+MemChkBuf 是BIOS填充好的数据缓冲区地址，C语言模块通过调用接口get_adr_buffer
+首先根据BIOS填充的地址描述符，设计一个对应的结构体，以便解析
+struct AddrRangeDesc {
+    unsigned int baseAddrLow;
+    unsigned int baseAddrHigh;
+    unsigned int lengthLow;
+    unsigned int lengthHigh;
+    unsigned int type;
+};
+
+char* get_adr_buffer(void);
+地址描述符的信息显示到桌面上
+void  showMemoryInfo(struct AddrRangeDesc* desc, char* vram, int page, int xsize,int color);
+
+void CMain(void)
+{
+    ...
+    // 调用汇编模块导出的接口, 获得地址描述符的内存地址
+    struct AddrRangeDesc *memDesc = (struct AddrRangeDesc *)(get_adr_buffer();//把这块内存强制转换成BIOS内存地址描述符的形式
+
+    for(;;)
+    { // 按下回车,内核就在桌面上显示下一个描述符的信息，显示完毕回到第一个
+        ...
+        else if(fifo0_status(&keyinfo)!=0) //键盘按下产生中断
+        {
+            io_sti();
+            data = fifo_get(&keyinfo);
+
+            if(data == 0x1C) //如果键盘按下回车键的扫描码
+            {
+                showMemoryInfo(memDesc+count,vram,count,xsize,COL8_FFFF); //显示相关的内存信息
+                count = count + 1;
+                if(count > memCnt)
+                {
+                    count == 0;
+                }
+            }
+            ...
+        }
+        ...
+    }
+}
+
+// 地址描述符每个成员的数值转换成16进制字符串显示到桌面上
+void  showMemoryInfo(struct AddrRangeDesc* desc, char* vram, int page,int xsize, int color) {
+    int x = 0, y = 0, gap = 13*8,  strLen = 10* 8;
+
+    boxfill8(vram, xsize, COL8_008484, 0, 0,  xsize, 100);
+
+    showString(vram, xsize, x, y, color, "page is: ");
+    char* pPageCnt = intToHexStr(page);
+    showString(vram, xsize, gap, y, color, pPageCnt);
+    y += 16;
+
+    showString(vram, xsize, x, y, color, "BaseAddrL: ");
+    char* pBaseAddrL = intToHexStr(desc->baseAddrLow);
+    showString(vram, xsize, gap, y, color, pBaseAddrL);
+    y += 16;
+
+    showString(vram, xsize, x, y, color, "BaseAddrH: ");
+    char* pBaseAddrH = intToHexStr(desc->baseAddrHigh);
+    showString(vram, xsize, gap, y, color, pBaseAddrH);
+
+    y += 16;
+    showString(vram, xsize, x, y, color, "lengthLow: ");
+    char* pLengthLow = intToHexStr(desc->lengthLow);
+    showString(vram, xsize, gap, y, color, pLengthLow);
+
+    y+= 16;
+    showString(vram, xsize, x, y, color, "lengthHigh: ");
+    char* pLengthHigh = intToHexStr(desc->lengthHigh);
+    showString(vram, xsize, gap, y, color, pLengthHigh);
+
+    y+= 16;
+    showString(vram, xsize, x, y, color, "type: ");
+    char* pType = intToHexStr(desc->type);
+    showString(vram, xsize, gap, y, color, pType);
+}

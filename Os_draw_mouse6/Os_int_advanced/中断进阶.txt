@@ -1,0 +1,89 @@
+按键按下,发送中断信号给CPU,键盘在端口0x60输出按键扫描码make code
+按键抬起,键盘在端口0x60输出断码break code
+eg: 按下A, 发送0x1E,抬起,发送0x9e
+; 更改Os_mouse_int中断处理代码
+void intHandlerFrom(char *esp)
+{
+    //键盘中断被CPU执行后，下次键盘再向CPU发送信号时，CPU就不会接收
+    //要想让CPU再次接收信号，必须向主PIC的端口再次发送键盘中断的中断向量号
+    char *vram = bootinfo.vgaRam;//显存地址
+    int xsize = bootInfo.screenX,ysize = bootInfo.screenY;//屏幕位置
+    // PIC_OCW2 的值是0x20, 也就是主PIC8259的控制端口,0x21对应的是键盘的中断向量
+    io_out8(PIC_OCW2,0x21);//向主8259A发送0x21
+    unsigned char data = 0;
+    o_in8 是内核汇编部分提供的函数，它从指定端口读入数据，并返回
+    data = io_in8(PORT_KEYDAT);//从0x60读取数据，可能读到扫描码或者断码
+    char *pStr = charToHexStr(data);//把读到的数据转换为16进制的字符串
+    static int showPos = 0;
+    showString(vram,xsize,showPos,0,COL8_FFFFFF,pStr);//显示字符串
+    showPos += 32;
+}
+
+char charToHexVal(char c) //字符串到16进制的转换
+{
+    if(c>=10)
+        return 'A' + c -10;
+    return '0' + c;
+}
+
+char* charToHexStr(unsigned char c) //把从键盘得到的键值转换成16进制的字符串
+{
+    int i = 0;
+    char mod = c%16;
+    keyval[3] = charToHexVal(mod);
+    c = c/16;
+    keyval[2] = charToHexVal(c);
+    
+    return keyval;
+}
+
+
+## 中断的优化处理
+### 解决中断处理可能过久的问题，尽快将控制器交还给原任务
+为键盘中断设置缓冲区
+struct KEYBUF {
+    unsigned char key_buf[32];
+    int next_r, next_w, len;
+};
+
+struct KEYBUF keybuf;
+32字节缓冲区,键盘中断从next_w位置写入,len表示当前缓冲区有效长度
+改进后键盘中断代码：
+每次键盘中断，代码都将相应的扫描码和断码写入缓冲区，如果缓冲区写满后，next_w置零
+void intHandlerFromC(char* esp) {
+    char*vram = bootInfo.vgaRam;
+    int xsize = bootInfo.screenX, ysize = bootInfo.screenY;
+    io_out8(PIC_OCW2, 0x21);
+    unsigned char data = 0;
+    data = io_in8(PORT_KEYDAT);
+    if (keybuf.len < 32) {
+       keybuf.key_buf[keybuf.next_w] = data;
+       keybuf.len++;
+       keybuf.next_w = (keybuf.next_w+1) % 32;
+    }
+}
+
+键盘数据的输出转移到内核的main中
+void CMain(void) {
+   ...
+   int data = 0;
+    for(;;) {
+       io_cli();
+       if (keybuf.len == 0) {
+           // 没有数据的时候
+           io_stihlt();
+       } else {
+           data = keybuf.key_buf[keybuf.next_r];
+           keybuf.next_r = (keybuf.next_r + 1) % 32;
+           io_sti();
+
+           char* pStr = charToHexStr(data);
+           static int showPos = 0;
+           showString(vram, xsize, showPos, 0, COL8_FFFFFF, pStr);
+           showPos += 32;           
+       }
+    }
+}
+
+
+

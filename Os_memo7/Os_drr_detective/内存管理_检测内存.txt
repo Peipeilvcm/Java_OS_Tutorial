@@ -1,0 +1,73 @@
+内存总量，通过15h中断获取硬件有多少内存可用
+内存范围描述符结构
+struct AddrRangeDesc { //BIOS实际上是以64位的寻址方式填充内存的
+    unsigned int  baseAddrLow ;  //内存基地址的低32位
+    unsigned int  baseAddrHigh;  //内存基地址的高32位
+    unsigned int  lengthLow;     //内存块长度的低32位
+    unsigned int  lengthHigh;    //内存块长度的高32位
+    unsigned int  type;          //描述内存块的类型，1代表可用被内核使用。3未来使用。2内核不能用
+}
+
+
+; es:di指向MemChkBuf,BIOS将会把地址范围描述符结构体
+; 每次调用一次int 15h中断，BIOS成功填充地址描述符后后,dwMCRNumber变量+1
+ComputeMemory:
+    mov ebx,0
+    mov di,MemChkBuf ;MemChkBuf是一块256字节的缓冲区存作为起始地址
+.loop:
+    mov eax,0E820h
+    mov ecx,20 ;内存大小
+    mov edx,0534D4150h 
+    int 15h ;调用中断执行BIOS系统调用，会向MemChkBuf填充20字节的数据
+    jc LABEL_MEM_CHK_FAIL ;填充失败
+    add di,20 ;每次BIOS都会向di为首地址的内存填充20字节，下次填充不覆盖之前的
+    inc dword [dwMCRNumber] ;dwMCRNumber是地址描述符数据结构的数量,每次填充成功+1个地址描述符
+    cmp ebx,0 ;如果ebx的值为0所有内存块的信息都已经被BIOS填充到MemChkBuf所指向的内存中了
+    jne .loop
+    jmp LABEL_MEM_CHK_OK ;跳转到正式启动的内核代码
+LABEL_MEM_CHK_FAIL:
+    mov dword [dwMCRNumBer],0 ;重新初始化dwMCRNumBer为0
+
+; 导出一个函数接口给c语言,把BIOS填充的地址描述符结构的个数返回给C语言模块
+get_memory_block_count:
+    mov  eax, [dwMCRNumber] ;返回一共BIOS写入了多少个地址描述符
+    ret
+
+// c语言接收到数据转换成成字符串显示在桌面：
+// 将一个32位整形数值转换为16进制的字符串
+char*  intToHexStr(unsigned int d) {
+    static char str[11];
+    str[0] = '0';
+    str[1] = 'X';
+    str[10] = 0;
+
+    int i = 2;
+    for(; i < 10; i++) {
+        str[i] = '0';
+    }
+
+    int p = 9;
+    while (p > 1 && d > 0) {
+        int e = d % 16;
+        d /= 16;
+        if (e >= 10) {
+           str[p] = 'A' + e - 10;
+        } else {
+            str[p] = '0' + e;
+        }         
+    } 
+
+    return str;
+}
+
+C 语言主函数实现
+void CMain()
+{ 
+    ... 
+    int memCnt = get_memory_block_count(); //接收地址描述符
+    char* pStr = intToHexStr(memCnt); //转换成字符串
+    showString(vram, xsize, 0, 0, COL8_FFFFFF, pStr);//打印在桌面|| 
+    ... 
+}
+
+在内核入口函数，我们调用get_memory_block_count(),获取dwMCRNumber的值,即6个内存范围描述符

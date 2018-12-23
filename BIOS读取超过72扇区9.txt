@@ -1,0 +1,116 @@
+思想：一次读取一个扇区，把这个扇区的数据先读入一个给定的
+    大小为512字节的缓冲区内
+    然后再把该缓冲区的内容，拷贝到指定的内存中
+内核要加载到内存08000h, 将08000h前512字节
+起始地址为07E00h开始的512字节内存作为软盘一个扇区数据的缓冲区
+
+org  0x7c00;
+
+LoadAddr EQU  08000h 
+; 实际地址=段地址*16+偏移, 需要得到0x7E00之后的地址,这里段地址设为0x7E0就行
+BufferAddr EQU 7E0h
+
+BaseOfStack     equ 07c00h
+
+entry:
+    mov  ax, 0
+    mov  ss, ax
+    mov  ds, ax
+
+    mov  ax, BufferAddr
+    mov  es, ax
+
+    mov  ax, 0
+    mov  ss, ax
+    mov  sp, BaseOfStack
+    mov  di, ax
+    mov  si, ax
+
+
+    mov          BX, 0       ; ES:BX 数据存储缓冲区
+    mov          CH, 1        ;CH 用来存储柱面号
+    mov          DH, 0        ;DH 用来存储磁头号
+    mov          CL, 0        ;CL 用来存储扇区号
+
+
+;每次都把扇区写入地址 07E00处
+
+readFloppy:
+
+    cmp          byte [load_count], 0
+    je           beginLoad
+
+    mov          bx, 0
+    inc          cl
+    mov          AH, 0x02      ;  AH = 02 表示要做的是读盘操作
+    mov          AL,  1        ; AL 表示要读取几个扇区
+    mov          DL, 0         ;驱动器编号，一般我们只有一个软盘驱动器，所以写死   
+                               ;为0
+    INT          0x13          ;调用BIOS中断实现磁盘读取功能
+    JC           fin
+
+
+;把刚写入07E00的一个扇区的内容写入从08000h开始的地址
+
+copySector:
+    push si
+    push di
+    push cx
+
+    mov  cx, 0200h  ;缓冲区数据大小，也就是512字节
+    mov  di, 0
+    mov  si, 0
+    mov  ax, word [load_section];es
+    mov  ds, ax
+
+copy:
+    cmp  cx, 0
+    je   copyend
+
+    mov  al, byte [es:si] ;es:si指向07E00
+    mov  byte [ds:di], al
+
+    inc  di
+    inc  si
+    dec  cx
+    jmp  copy
+
+copyend:
+    pop cx
+    pop di
+    pop si
+
+    mov bx, ds
+; load_section加上512指向下一个扇区地址进行复制 020h即512/16=32,段地址要移一位
+    add bx, 020h
+    mov ax, 0
+    mov ds, ax
+    mov word [load_section], bx
+    mov bx, 0
+
+    ;end of copySector
+
+    cmp          cl, 18
+    jb           readFloppy
+
+    inc          CH
+    mov          cl, 0
+    dec          byte [load_count]
+    jmp          readFloppy
+
+beginLoad:
+
+    mov  ax, 0
+    mov  ds, ax
+
+    jmp          LoadAddr
+
+
+load_count db 10 ;连续读取几个柱面
+; load_section 要除以16,因为要赋给段寄存器,表明段地址,所以是0800h,这样就能把内容填入0x8000h之后
+load_section dw 0800h
+
+fin:
+
+    HLT
+    jmp  fin
